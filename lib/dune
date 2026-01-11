@@ -1,0 +1,18 @@
+(menhir
+ (modules parser)
+ (explain true)
+ (infer true))
+
+(ocamllex lexer)
+
+(library
+ (name msp_eff)
+ (preprocess
+  (staged_pps ppx_deriving_yojson ppx_deriving.show))
+ (modules front parser lexer syntax trans aux subst parser_wrap infer eval builtin top)
+ (libraries dolog yojson ppx_deriving_yojson.runtime common))
+
+(env
+ (dev
+  (flags
+   (:standard -warn-error -a -g))))

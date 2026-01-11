@@ -1,0 +1,4 @@
+(executable
+ (public_name msp_eff)
+ (name main)
+ (libraries msp_eff))

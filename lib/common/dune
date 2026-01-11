@@ -1,0 +1,11 @@
+(library
+ (name common)
+ (preprocess
+  (staged_pps ppx_deriving_yojson ppx_deriving.show))
+ (modules myutil ext persistence logging all)
+ (libraries dolog yojson ppx_deriving_yojson.runtime))
+
+(env
+ (dev
+  (flags
+   (:standard -warn-error -a -g))))
