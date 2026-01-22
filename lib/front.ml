@@ -23,6 +23,7 @@ module Exp = struct
     | App of t * t
     | If of t * t * t
     | Let of Var.t * t * t
+    | CLet of Var.t * t * t
     | CLam of Var.t * t
     | Reset0 of t
     | Shift0 of Var.t * t
@@ -41,6 +42,8 @@ module Exp = struct
         equal e1c e2c && equal e1t e2t && equal e1f e2f
     | Let (x1, e1v, e1b), Let (x2, e2v, e2b) ->
         x1.body = x2.body && equal e1v e2v && equal e1b e2b
+    | CLet (x1, e1v, e1b), CLet (x2, e2v, e2b) ->
+        x1.body = x2.body && equal e1v e2v && equal e1b e2b
     | CLam (x1, e1), CLam (x2, e2) -> x1.body = x2.body && equal e1 e2
     | Reset0 e1, Reset0 e2 -> equal e1 e2
     | Shift0 (x1, e1), Shift0 (x2, e2) -> x1.body = x2.body && equal e1 e2
@@ -49,5 +52,5 @@ module Exp = struct
 end
 
 module Statement = struct
-  type t = (Exp.Var.t * Exp.t) list
+  type t = (Exp.Var.t * Exp.t) list [@@deriving show]
 end

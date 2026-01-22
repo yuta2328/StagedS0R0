@@ -92,7 +92,7 @@ module EvaluationContext = struct
       | If (e1, e2, e3) ->
           let ctx, e1' = aux e1 in
           (IfZeroLeft (ctx, e2, e3), e1')
-      | ULam (x, body) ->
+      | ULam (x, body) when Level0.is_value body ->
           let ctx, body' = aux body in
           (ULam (x, ctx), body')
       | Let (_, e1, _) when Level0.is_value e1 -> (Hole, e)
@@ -194,6 +194,8 @@ module RuntimeError = struct
   type t = Msg of string [@@deriving show]
 end
 
+exception Error of RuntimeError.t
+
 let eval env e =
   let rec aux : Redex.t -> Value.t = function
     | Value (Var x) -> (
@@ -221,9 +223,11 @@ let eval env e =
           (Value.show v1) (Level0.Var.show x) (Level0.show e2);
         aux @@ Redex.embed e2'
     | CLam (x, e1) ->
-        let u = Level1.Var.fresh () in
-        let v = Value.Bracket (Level1.Var u) in
-        aux @@ Redex.embed @@ Level0.subst x (Value.embed v) e1
+        (* let u = Level1.Var.fresh () in *)
+        (* let v = Value.Bracket (Level1.Var u) in *)
+        (* aux @@ Redex.embed @@ Level0.return *)
+        (* @@ ULam (u, Level0.subst x (Value.embed v) e1) *)
+        failwith "TODO fix"
     | ULam (u, e1) -> Bracket (Lam (u, e1))
     | ResetValue v -> v
     | Cont (ctx, k, e1) ->

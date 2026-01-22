@@ -1,0 +1,1 @@
+{ clet x = cfun x1 -> x1 in shift0 k in clet y = cint 2 in throw k to capp x y }

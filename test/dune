@@ -1,4 +1,4 @@
 (tests
  (names parser infer eval)
- (libraries alcotest qcheck msp_eff)
+ (libraries alcotest qcheck StagedS0R0)
  (preprocess (pps ppx_inline_test)))

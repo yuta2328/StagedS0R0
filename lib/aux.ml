@@ -477,7 +477,7 @@ module Types = struct
             fprintf fmt "%a -[%a]-> %a" (f Pos.Left) ty1 AnnotationAux.pp ann
               (f Pos.Right) ty2
         | ContFun (ty1, ty2, ann) ->
-            fprintf fmt "%a -{%a}-> %a" (f Pos.Left) ty1 AnnotationAux.pp ann
+            fprintf fmt "%a >-{%a}-> %a" (f Pos.Left) ty1 AnnotationAux.pp ann
               (f Pos.Right) ty2
         | Code (ty, cls) -> fprintf fmt "<%a>^%a" Level1.pp ty Classifier.pp cls
     end
@@ -544,7 +544,7 @@ module Types = struct
     let rec pp fmt : Annotation.t -> unit = function
       | Empty -> fprintf fmt "ε"
       | Var v -> fprintf fmt "%a" Var.pp v
-      | Seq (ty, ann) -> fprintf fmt "%a ; %a" Level0Aux.pp ty pp ann
+      | Seq (ty, ann) -> fprintf fmt "[%a, %a]" Level0Aux.pp ty pp ann
 
     let show ann = asprintf "%a" pp ann
     let fresh () = Annotation.Var (Var.fresh ())
@@ -624,6 +624,12 @@ module Types = struct
     | Annotation t1, Annotation t2 -> t1 = t2
     | Classifier t1, Classifier t2 -> t1 = t2
 
+  let fresh_of : type a. a t -> a t = function
+    | Level0 ty -> Level0 (Level0.fresh_of ty)
+    | Level1 ty -> Level1 (Level1.fresh_of ty)
+    | Annotation ty -> Annotation (Annotation.fresh_of ty)
+    | Classifier ty -> Classifier (Classifier.fresh_of ty)
+
   let varof : type a. a Var.t -> a t =
    fun var ->
     match var with
@@ -664,7 +670,7 @@ module Constraint = struct
   let pp_of pp_ty fmt = function
     | { body = Le (ty1, ty2); _ } -> fprintf fmt "%a ≤ %a" pp_ty ty1 pp_ty ty2
     | { body = NotIn (cls, ann); _ } ->
-        fprintf fmt "%a ∉ %a" Types.Classifier.pp cls pp_ty ann
+        fprintf fmt "%a ⋢ %a" Types.Classifier.pp cls pp_ty ann
 
   let ( *<= ) x y = { body = Le (x, y); attr = SourcePosition.dummy }
   let ( *<=@ ) x y spos = { body = Le (x, y); attr = spos }
@@ -686,71 +692,40 @@ module Assumption = struct
 end
 
 module AllVarList = struct
-  include AllVarList
+  type pack = Pack : 'a Types.Var.t -> pack
 
-  let empty = []
+  module S = Set.Make (struct
+    type t = pack
 
-  let pp fmt (vars : t) =
-    pp_list_comma (fun fmt (Pack p) -> Types.Var.pp fmt p) fmt vars
+    let compare x y = compare x y
+    let pp fmt (Pack x) = fprintf fmt "%a" Types.Var.pp x
+    let show x = asprintf "%a" pp x
+  end)
 
-  let show vars = asprintf "%a" pp vars
-  let ( @ ) : t -> t -> t = ( @ )
-  let ( @:: ) var vars = Pack var :: vars
+  type t = S.t
+
+  let empty : t = S.empty
+  let pp fmt (vars : t) = S.pp fmt vars
+  let show : t -> string = asprintf "%a" pp
+  let ( @ ) : t -> t -> t = S.union
+
+  let ( @:: ) : type a. a Types.Var.t -> t -> t =
+   fun var vars -> S.add (Pack var) vars
 
   let fresh_of : t -> t =
-    List.map @@ fun (Pack tv) -> Pack (Types.Var.fresh_of tv)
+    S.of_list
+    **. List.map (fun (Pack tv) -> Pack (Types.Var.fresh_of tv))
+    **. S.to_list
 
-  let singleton = fun tv -> [ Pack tv ]
-
-  let mem : type a. a Types.Var.t -> t -> bool =
-   fun tv ty ->
-    match tv with
-    | Level0 v ->
-        List.exists (function Pack (Level0 v2) -> v = v2 | _ -> false) ty
-    | Level1 v ->
-        List.exists (function Pack (Level1 v2) -> v = v2 | _ -> false) ty
-    | Annotation v ->
-        List.exists (function Pack (Annotation v2) -> v = v2 | _ -> false) ty
-    | Classifier v ->
-        List.exists (function Pack (Classifier v2) -> v = v2 | _ -> false) ty
-
-  let diff (t1 : t) (t2 : t) : t =
-    List.filter (fun (Pack tv1) -> not (mem tv1 t2)) t1
-
-  let is_disjoint t1 t2 = List.for_all (fun (Pack tv1) -> not (mem tv1 t2)) t1
-
-  let level0_of : t -> Types.Level0.t Types.Var.t list =
-   fun t ->
-    List.fold_right
-      (fun (Pack tv) acc ->
-        match tv with Level0 v -> Types.Var.Level0 v :: acc | _ -> acc)
-      t []
-
-  let level1_of : t -> Types.Level1.t Types.Var.t list =
-   fun t ->
-    List.fold_right
-      (fun (Pack tv) acc ->
-        match tv with Level1 v -> Types.Var.Level1 v :: acc | _ -> acc)
-      t []
-
-  let annotation_of : t -> Types.Annotation.t Types.Var.t list =
-   fun t ->
-    List.fold_right
-      (fun (Pack tv) acc ->
-        match tv with Annotation v -> Types.Var.Annotation v :: acc | _ -> acc)
-      t []
-
-  let classifier_of : t -> Types.Classifier.t Types.Var.t list =
-   fun t ->
-    List.fold_right
-      (fun (Pack tv) acc ->
-        match tv with Classifier v -> Types.Var.Classifier v :: acc | _ -> acc)
-      t []
+  let singleton : type a. a Types.Var.t -> t = fun tv -> S.singleton @@ Pack tv
+  let mem : type a. a Types.Var.t -> t -> bool = fun tv t -> S.mem (Pack tv) t
+  let diff : t -> t -> t = S.diff
+  let is_disjoint : t -> t -> bool = S.disjoint
 end
 
 module AllConstraintList = struct
-  open Constraint
-  include AllConstraintList
+  type pack = Pack : 'a Syntax.Types.t Constraint.t -> pack
+  type t = pack list
 
   let empty = []
   let is_empty t = t = []
@@ -767,16 +742,22 @@ module AllConstraintList = struct
 
   let ( @::! ) = fun cls_list clsl -> List.fold_right ( @:: ) cls_list clsl
 
-  let ( */=* ) cls (allvar : AllVarList.t) : AllConstraintList.t =
-    flip List.map allvar @@ fun (Pack tv) -> Pack (cls */= Types.varof tv)
+  let ( */=* ) cls (allvar : AllVarList.t) : t =
+    flip List.map (AllVarList.S.to_list allvar) @@ fun (Pack tv) ->
+    Pack Constraint.(cls */= Types.varof tv)
 
-  let ( */=*@ ) cls (allvar : AllVarList.t) spos : AllConstraintList.t =
-    flip List.map allvar @@ fun (Pack tv) ->
-    Pack ((cls */=@ Types.varof tv) @@ spos)
+  let ( */=*@ ) cls (allvar : AllVarList.t) spos : t =
+    flip List.map (AllVarList.S.to_list allvar) @@ fun (Pack tv) ->
+    Pack (Constraint.(cls */=@ Types.varof tv) @@ spos)
 end
 
 module TypeScheme = struct
-  include TypeScheme
+  type t = {
+    bound_vars : AllVarList.t;
+    assumptions : Assumption.t;
+    all_constraints : AllConstraintList.t;
+    ty : Types.Level0.t;
+  }
 
   let pp fmt (ts : t) =
     fprintf fmt "@[<hov 1> ∀%a.@ (@[%a@]@ => @[%a@])@ =>@ %a@]" AllVarList.pp
@@ -787,7 +768,11 @@ module TypeScheme = struct
 end
 
 module Env = struct
-  include Env
+  module Value = struct
+    type t = { ty : TypeScheme.t; value : Exp.Value.t }
+  end
+
+  type t = (Exp.Level0.Var.t * Value.t) list
 
   let lookup key t = List.assoc_opt key t
 

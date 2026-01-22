@@ -1,4 +1,3 @@
-(* This module is the set of utilities for me. *)
 open Format
 open Myutil
 
@@ -85,6 +84,9 @@ module String = struct
     let len = String.length s in
     if n < 0 || len < n then invalid_arg "insert_at"
     else String.sub s 0 n ^ t ^ String.sub s n (len - n)
+
+  let pp fmt x = fprintf fmt "%s" x
+  let show x = x
 end
 
 module IO = struct
@@ -255,6 +257,19 @@ module Format = struct
     fprintf fmt "@[%a@]"
       (pp_print_list ~pp_sep:(fun fmt _ -> fprintf fmt ",@ ") pp)
       l
+end
+
+module Result = struct
+  include Result
+
+  let get_ok_exn : type e.
+      (module Show.S with type t = e) -> ('a, e) result -> 'a =
+   fun (module S) r ->
+    match r with
+    | Ok v -> v
+    | Error e ->
+        eprintf "%a\n" S.pp e;
+        exit 1
 end
 
 module SourcePosition = struct

@@ -1,0 +1,1 @@
+{ cfun x -> shift0 k in cfun y -> x }

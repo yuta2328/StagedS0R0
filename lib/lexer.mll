@@ -31,7 +31,7 @@ rule token = parse
     (* keywords *)
     | "true" { TRUE }  | "false" { FALSE }
     | "cfun" { CFUN } | "fun" { FUN } | "shift0" { SHIFT }
-    | "let" { LET } | "in" { IN }
+    | "let" { LET } | "clet" { CLET } | "in" { IN }
     | "if" { IF } | "then" { THEN } | "else" { ELSE }
     | "throw" { THROW } | "to" { TO }
     (* base *)

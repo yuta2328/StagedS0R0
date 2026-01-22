@@ -9,24 +9,24 @@ module TypeContext = struct
   }
 
   let pp fmt t =
-    fprintf fmt "@[<hov 1>Context: %a@ Constraints: %a@]"
-      ( pp_list_comma @@ fun fmt (var, ty) ->
+    fprintf fmt "@[<hov 1>%a,@ %a@]"
+      ( pp_print_list ~pp_sep:(fun fmt () -> fprintf fmt ", ")
+      @@ fun fmt (var, ty) ->
         fprintf fmt "%a : %a" Exp.Level0.Var.pp var Types.Level0.pp ty )
-      t.context Assumption.pp t.constraints
+      (List.rev t.context) Assumption.pp (List.rev t.constraints)
 
   let show t = asprintf "%a" pp t
   let empty = { context = []; constraints = [] }
 
   let add var ty t : t =
-    info "[Infer.TypeContext.add] %s"
-    @@ asprintf "%a, %a :: %a" Exp.Level0.Var.pp var Types.Level0.pp ty pp t;
-    { t with context = (var, ty) :: t.context }
+    let t = { t with context = (var, ty) :: t.context } in
+    info "[Infer.TypeContext.add] %s" @@ show t;
+    t
 
   let add_cstr var1 var2 t : t =
-    info "[Infer.TypeContext.add_cstr] %s"
-    @@ asprintf "%a <= %a :: %a" Types.Classifier.Var.pp var1
-         Types.Classifier.Var.pp var2 pp t;
-    { t with constraints = (var1, var2) :: t.constraints }
+    let t = { t with constraints = (var1, var2) :: t.constraints } in
+    info "[Infer.TypeContext.add_cstr] %s" @@ show t;
+    t
 
   let lookup var t : Types.Level0.t option =
     info "[Infer.TypeContext.lookup] Looking up %s in %s"
@@ -59,6 +59,8 @@ end
 
 module PolyContext = struct
   type t = (Exp.Level0.Var.t * TypeScheme.t) list
+
+  let from_list l = l
 
   let pp fmt t =
     fprintf fmt "@[<hov 1>%a@]"
@@ -135,22 +137,33 @@ module ConstraintGraph = struct
     let prod : AllVarList.t -> AllVarList.t -> t list =
      fun tv1 tv2 ->
       let open Constraint in
-      List.concat_option @@ List.concat @@ flip List.map tv1
-      @@ fun (Pack v1) ->
-      flip List.map tv2 @@ fun (Pack v2) ->
-      match (v1, v2) with
-      | Level0 v1, Level0 v2 -> Some (Pack (Types.Var.Level0 v1 *<= Level0 v2))
-      | Level1 v1, Level1 v2 -> Some (Pack (Types.Var.Level1 v1 *<= Level1 v2))
-      | Classifier v1, Classifier v2 ->
-          Some (Pack (Types.Var.Classifier v1 *<= Classifier v2))
-      | Annotation v1, Annotation v2 ->
-          Some (Pack (Types.Var.Annotation v1 *<= Annotation v2))
-      | _ -> None
+      let result =
+        List.concat_option @@ List.concat
+        @@ flip List.map (AllVarList.S.to_list tv1)
+        @@ fun (Pack v1) ->
+        flip List.map (AllVarList.S.to_list tv2) @@ fun (Pack v2) ->
+        match (v1, v2) with
+        | Level0 v1, Level0 v2 ->
+            Some (Pack (Types.Var.Level0 v1 *<= Level0 v2))
+        | Level1 v1, Level1 v2 ->
+            Some (Pack (Types.Var.Level1 v1 *<= Level1 v2))
+        | Classifier v1, Classifier v2 ->
+            Some (Pack (Types.Var.Classifier v1 *<= Classifier v2))
+        | Annotation v1, Annotation v2 ->
+            Some (Pack (Types.Var.Annotation v1 *<= Annotation v2))
+        | _ -> None
+      in
+      let () =
+        info "[Infer.ConstraintGraph.Elem.prod] %s, %s ===> %s"
+          (AllVarList.show tv1) (AllVarList.show tv2)
+        @@ asprintf "%a" (pp_list pp) result
+      in
+      result
 
     let non_related : Types.Classifier.t -> AllVarList.t -> t list =
      fun cls tv ->
       let open Constraint in
-      flip List.map tv @@ fun (Pack v) -> Pack (cls */= v)
+      flip List.map (AllVarList.S.to_list tv) @@ fun (Pack v) -> Pack (cls */= v)
   end
 
   module S : Set.S with type elt = Elem.t = Set.Make (Elem)
@@ -168,46 +181,59 @@ module ConstraintGraph = struct
 
   let filter_lesseq : type a. t -> a Syntax.Types.Var.t -> AllVarList.t =
    fun t var ->
-    List.fold_left AllVarList.( @ ) AllVarList.empty
-    @@ List.map Elem.safe_fst @@ S.to_list
+    List.fold_left AllVarList.( @ ) (AllVarList.singleton var)
+    @@ List.map Elem.safe_snd @@ S.to_list
     @@ S.filter (Elem.less_eq var) t.graph
 
   let filter_greteq : type a. t -> a Syntax.Types.Var.t -> AllVarList.t =
    fun t var ->
-    List.fold_left AllVarList.( @ ) AllVarList.empty
-    @@ List.map Elem.safe_snd @@ S.to_list
+    List.fold_left AllVarList.( @ ) (AllVarList.singleton var)
+    @@ List.map Elem.safe_fst @@ S.to_list
     @@ S.filter (Elem.gret_eq var) t.graph
 
   let filter_less_nonrec : type a. t -> a Syntax.Types.Var.t -> AllVarList.t =
    fun t var ->
-    List.fold_left AllVarList.( @ ) AllVarList.empty
+    List.fold_left AllVarList.( @ ) (AllVarList.singleton var)
     @@ List.map Elem.safe_snd @@ S.to_list
     @@ S.filter (Elem.less_nonrec var) t.graph
 
   let filter_sim : type a. t -> a Syntax.Types.Var.t -> AllVarList.t =
-   fun t var -> filter_lesseq t var @ filter_greteq t var
+   fun t var ->
+    let vars = AllVarList.(filter_lesseq t var @ filter_greteq t var) in
+    AllVarList.S.fold
+      (fun (Pack var) vars ->
+        AllVarList.(filter_lesseq t var @ filter_greteq t var @ vars))
+      vars AllVarList.empty
 
   let add : type a. a Syntax.Types.Var.t Constraint.t -> t -> t =
    fun cstr t ->
     match cstr with
     | { body = Le (v1, v2); _ } ->
-        let () =
-          info "[Infer.ConstraintGraph.add] Adding constraint: %s"
-          @@ asprintf "%a <= %a" Aux.Types.Var.pp v1 Aux.Types.Var.pp v2
+        let less = AllVarList.(v1 @:: filter_greteq t v1) in
+        let gret = AllVarList.(v2 @:: filter_lesseq t v2) in
+        let result =
+          { t with graph = List.fold_right S.add (Elem.prod less gret) t.graph }
         in
-        let less = filter_lesseq t v1 in
-        let gret = filter_greteq t v2 in
-        { t with graph = List.fold_right S.add (Elem.prod less gret) t.graph }
+        let () =
+          info "[Infer.ConstraintGraph.add] Adding %s: result = %s"
+            (asprintf "%a <= %a" Aux.Types.Var.pp v1 Aux.Types.Var.pp v2)
+            (show result)
+        in
+        result
     | { body = NotIn (cls, v); _ } ->
-        let () =
-          info "[Infer.ConstraintGraph.add] Adding constraint: %s"
-          @@ asprintf "%a ∉ %a" Types.Classifier.Var.pp cls Aux.Types.Var.pp v
+        let nonrecv = AllVarList.(v @:: filter_less_nonrec t v) in
+        let result =
+          {
+            t with
+            graph = List.fold_right S.add (Elem.non_related cls nonrecv) t.graph;
+          }
         in
-        let nonrecv = filter_less_nonrec t v in
-        {
-          t with
-          graph = List.fold_right S.add (Elem.non_related cls nonrecv) t.graph;
-        }
+        let () =
+          info "[Infer.ConstraintGraph.add] Adding %s: result = %s"
+            (asprintf "%a ⋢ %a" Types.Classifier.Var.pp cls Aux.Types.Var.pp v)
+            (show result)
+        in
+        result
 
   let contains : type a. t -> a Syntax.Types.Var.t Constraint.t -> bool =
    fun t cstr -> S.mem (Elem.Pack cstr) t.graph
@@ -245,7 +271,14 @@ module ConstraintGraph = struct
       t -> a Syntax.Types.Var.t -> a Syntax.Types.t -> bool =
    fun t var ty ->
     let vars = filter_sim t var in
-    AllVarList.is_disjoint vars @@ Types.fv ty
+    let result = not @@ AllVarList.is_disjoint vars @@ Types.fv ty in
+    let () =
+      info
+        "[Infer.ConstraintGraph.occurs_check] Occurs check: {%s} (= {v| v ~ \
+         %s} ) ⊄ FV(%s) === %b"
+        (AllVarList.show vars) (Types.Var.show var) (Types.show ty) result
+    in
+    result
 
   let subst_var =
    fun sbt t ->
@@ -272,7 +305,7 @@ module CGenInput = struct
   }
 
   let pp fmt input =
-    fprintf fmt "@[<hov 1>%a@ ;@ %a@ |-@ %a;@]" TypeContext.pp input.ty_cxt
+    fprintf fmt "@[<hov 1>%a@ ;@ %a@ |-@ %a@]" TypeContext.pp input.ty_cxt
       PolyContext.pp input.poly_cxt Exp.Level0.pp input.exp
 
   let show = asprintf "%a" pp
@@ -613,7 +646,8 @@ let cgen x =
             AllConstraintList.(
               ((Level0 output1.ty *<=@ Level0 (Code (level1, cls)))
               @@ x.exp.attr)
-              @:: ((Annotation output1.annotation *<=@ Annotation ann)
+              @:: (Annotation output1.annotation
+                   *<=@ Annotation (Seq (Code (level1, cls), ann))
                   @@ x.exp.attr)
               @:: output1.constraints);
         }
@@ -649,7 +683,7 @@ let cgen x =
           assumptions = output1.assumptions;
           constraints =
             AllConstraintList.(
-              ((Level0 output1.ty *<=@ Level0 (Code (level10, cls1)))
+              ((Level0 output1.ty *<=@ Level0 (Code (level11, cls0)))
               @@ x.exp.attr)
               @:: ((Annotation output1.annotation *<=@ Annotation ann)
                   @@ x.exp.attr)
@@ -755,6 +789,26 @@ module CSolveConfiguration = struct
     }
 end
 
+let imitate : type a.
+    CSolveConfiguration.t ->
+    a Syntax.Types.Var.t ->
+    a Syntax.Types.t ->
+    CSolveConfiguration.t =
+ fun config var ty ->
+  let tvl = ConstraintGraph.filter_sim config.cgraph @@ var in
+  let sbt = Substitution.Subst.refresh_and_gen_subst tvl ty in
+  let elim_cstr =
+    ConstraintGraph.subst_var sbt
+    @@ ConstraintGraph.get_sim config.cgraph
+    @@ var
+  in
+  let new_constraints = AllConstraintList.subst sbt config.constraints in
+  {
+    constraints = new_constraints @ elim_cstr;
+    subst = Substitution.Subst.(sbt **. config.subst);
+    cgraph = ConstraintGraph.elim_sim var config.cgraph;
+  }
+
 let csolve assumptions allcstr =
   let open Constraint in
   let open Substitution.Subst in
@@ -762,8 +816,10 @@ let csolve assumptions allcstr =
   let open ConstraintGraph in
   let rec aux config =
     let () = info "[Infer.csolve] %s" @@ CSolveConfiguration.show config in
+    let info_case str = info "[Infer.csolve] %s" str in
     match config.CSolveConfiguration.constraints with
     | [] ->
+        info_case "All constraints solved.";
         CSolveOutput.
           {
             constraints = AllConstraintList.empty;
@@ -772,9 +828,11 @@ let csolve assumptions allcstr =
           }
     (* U-Refl *)
     | Pack { body = Le (ty1, ty2); _ } :: tl when Types.(ty1 = ty2) ->
+        info_case "U-Refl";
         aux { config with constraints = tl }
     (* U-Var *)
     | Pack { body = Le (Level0 (Var tv1), Level0 (Var tv2)); _ } :: tl ->
+        info_case "U-Var (Level0)";
         aux
           {
             config with
@@ -785,6 +843,7 @@ let csolve assumptions allcstr =
                 config.cgraph;
           }
     | Pack { body = Le (Level1 (Var tv1), Level1 (Var tv2)); _ } :: tl ->
+        info_case "U-Var (Level1)";
         aux
           {
             config with
@@ -796,6 +855,7 @@ let csolve assumptions allcstr =
           }
     | Pack { body = Le (Annotation (Var tv1), Annotation (Var tv2)); _ } :: tl
       ->
+        info_case "U-Var (Annotation)";
         aux
           {
             config with
@@ -805,98 +865,113 @@ let csolve assumptions allcstr =
                 (Types.Var.Annotation tv1 *<= Annotation tv2)
                 config.cgraph;
           }
-        (* U-LVar *)
+    (* U-LVar *)
     | Pack { body = Le (Level0 (Var tv), Level0 ty2); _ } :: tl
       when not @@ occurs_check config.cgraph (Level0 tv) (Level0 ty2) ->
-        let tvl =
-          AllVarList.level0_of
-          @@ ConstraintGraph.filter_sim config.cgraph
-          @@ Level0 tv
+        info_case "U-LVar (Level0)";
+        let config =
+          imitate { config with constraints = tl } (Level0 tv) (Level0 ty2)
         in
-        let sbt =
-          compose_all
-          @@ List.map
-               (fun tv -> subst_of tv @@ Level0 (Types.Level0.fresh_of ty2))
-               tvl
-        in
-        let elim_cstr =
-          ConstraintGraph.subst_var sbt
-          @@ ConstraintGraph.get_sim config.cgraph
-          @@ Level0 tv
-        in
-        let new_constraints = AllConstraintList.subst sbt tl in
         aux
           {
-            constraints = new_constraints @ elim_cstr;
-            subst = sbt **. config.subst;
-            cgraph = ConstraintGraph.elim_sim (Level0 tv) config.cgraph;
+            config with
+            constraints =
+              Syntax.Types.Level0 (Types.Level0.subst config.subst (Var tv))
+              *<= Level0 ty2
+              @:: config.constraints;
           }
     | Pack { body = Le (Level1 (Var tv), Level1 ty2); _ } :: tl
       when not @@ occurs_check config.cgraph (Level1 tv) (Level1 ty2) ->
-        let tvl =
-          AllVarList.level1_of
-          @@ ConstraintGraph.filter_sim config.cgraph
-          @@ Level1 tv
+        info_case "U-LVar (Level1)";
+        let config =
+          imitate { config with constraints = tl } (Level1 tv) (Level1 ty2)
         in
-        let sbt =
-          compose_all
-          @@ List.map
-               (fun tv -> subst_of tv @@ Level1 (Types.Level1.fresh_of ty2))
-               tvl
-        in
-        let elim_cstr =
-          ConstraintGraph.subst_var sbt
-          @@ ConstraintGraph.get_sim config.cgraph
-          @@ Level1 tv
-        in
-        let new_constraints = AllConstraintList.subst sbt tl in
         aux
           {
-            constraints = new_constraints @ elim_cstr;
-            subst = sbt **. config.subst;
-            cgraph = ConstraintGraph.elim_sim (Level1 tv) config.cgraph;
+            config with
+            constraints =
+              Syntax.Types.Level1 (Types.Level1.subst config.subst (Var tv))
+              *<= Level1 ty2
+              @:: config.constraints;
           }
     | Pack { body = Le (Annotation (Var tv), Annotation ty2); _ } :: tl
       when not @@ occurs_check config.cgraph (Annotation tv) (Annotation ty2) ->
-        let tvl =
-          AllVarList.annotation_of
-          @@ ConstraintGraph.filter_sim config.cgraph
-          @@ Annotation tv
+        info_case "U-LVar (Annotation)";
+        let config =
+          imitate
+            { config with constraints = tl }
+            (Annotation tv) (Annotation ty2)
         in
-        let sbt =
-          compose_all
-          @@ List.map
-               (fun tv ->
-                 subst_of tv @@ Annotation (Types.Annotation.fresh_of ty2))
-               tvl
-        in
-        let elim_cstr =
-          ConstraintGraph.subst_var sbt
-          @@ ConstraintGraph.get_sim config.cgraph
-          @@ Annotation tv
-        in
-        let new_constraints = AllConstraintList.subst sbt tl in
         aux
           {
-            constraints = new_constraints @ elim_cstr;
-            subst = sbt **. config.subst;
-            cgraph = ConstraintGraph.elim_sim (Annotation tv) config.cgraph;
+            config with
+            constraints =
+              Syntax.Types.Annotation
+                (Types.Annotation.subst config.subst (Var tv))
+              *<= Annotation ty2
+              @:: config.constraints;
+          }
+    (* U-RVar *)
+    | Pack { body = Le (Level0 ty, Level0 (Var tv)); _ } :: tl
+      when not @@ occurs_check config.cgraph (Level0 tv) (Level0 ty) ->
+        info_case "U-RVar (Level0)";
+        let config =
+          imitate { config with constraints = tl } (Level0 tv) (Level0 ty)
+        in
+        aux
+          {
+            config with
+            constraints =
+              Syntax.Types.Level0 ty
+              *<= Level0 (Types.Level0.subst config.subst (Var tv))
+              @:: config.constraints;
+          }
+    | Pack { body = Le (Level1 ty, Level1 (Var tv)); _ } :: tl
+      when not @@ occurs_check config.cgraph (Level1 tv) (Level1 ty) ->
+        info_case "U-RVar (Level1)";
+        let config =
+          imitate { config with constraints = tl } (Level1 tv) (Level1 ty)
+        in
+        aux
+          {
+            config with
+            constraints =
+              Syntax.Types.Level1 ty
+              *<= Level1 (Types.Level1.subst config.subst (Var tv))
+              @:: config.constraints;
+          }
+    | Pack { body = Le (Annotation ty, Annotation (Var tv)); _ } :: tl
+      when not @@ occurs_check config.cgraph (Annotation tv) (Annotation ty) ->
+        info_case "U-RVar (Annotation)";
+        let config =
+          imitate
+            { config with constraints = tl }
+            (Annotation tv) (Annotation ty)
+        in
+        aux
+          {
+            config with
+            constraints =
+              Syntax.Types.Annotation ty
+              *<= Annotation (Types.Annotation.subst config.subst (Var tv))
+              @:: config.constraints;
           }
     (* U-TArrow *)
     | Pack
         {
           body =
             Le (Level0 (Fun (ty11, ty12, ann1)), Level0 (Fun (ty21, ty22, ann2)));
-          _;
+          attr;
         }
       :: tl ->
+        info_case "U-TArrow";
         aux
           {
             config with
             constraints =
-              (Syntax.Types.Level0 ty21 *<= Level0 ty11)
-              @:: (Syntax.Types.Level0 ty12 *<= Level0 ty22)
-              @:: (Syntax.Types.Annotation ann1 *<= Annotation ann2)
+              ((Syntax.Types.Level0 ty21 *<=@ Level0 ty11) @@ attr)
+              @:: ((Syntax.Types.Level0 ty12 *<=@ Level0 ty22) @@ attr)
+              @:: ((Syntax.Types.Annotation ann1 *<=@ Annotation ann2) @@ attr)
               @:: tl;
           }
         (* U-TContArrow *)
@@ -906,40 +981,52 @@ let csolve assumptions allcstr =
             Le
               ( Level0 (ContFun (ty11, ty12, ann1)),
                 Level0 (ContFun (ty21, ty22, ann2)) );
-          _;
+          attr;
         }
       :: tl ->
+        info_case "U-TContArrow";
         aux
           {
             config with
             constraints =
-              (Syntax.Types.Level0 ty21 *<= Level0 ty11)
-              @:: (Syntax.Types.Level0 ty12 *<= Level0 ty22)
-              @:: (Syntax.Types.Annotation ann1 *<= Annotation ann2)
+              ((Syntax.Types.Level0 ty21 *<=@ Level0 ty11) @@ attr)
+              @:: ((Syntax.Types.Level0 ty12 *<=@ Level0 ty22) @@ attr)
+              @:: ((Syntax.Types.Annotation ann1 *<=@ Annotation ann2) @@ attr)
               @:: tl;
           }
         (* U-TCode *)
     | Pack
-        { body = Le (Level0 (Code (ty1, cls1)), Level0 (Code (ty2, cls2))); _ }
+        {
+          body = Le (Level0 (Code (ty1, cls1)), Level0 (Code (ty2, cls2)));
+          attr;
+        }
       :: tl ->
+        info_case "U-TCode";
         aux
           {
             config with
             constraints =
-              (Syntax.Types.Level1 ty1 *<= Syntax.Types.Level1 ty2)
-              @:: (Syntax.Types.Classifier cls1 *<= Syntax.Types.Classifier cls2)
+              ((Syntax.Types.Level1 ty1 *<=@ Syntax.Types.Level1 ty2) @@ attr)
+              @:: (Syntax.Types.Classifier cls1
+                   *<=@ Syntax.Types.Classifier cls2
+                  @@ attr)
               @:: tl;
           }
         (* U-T1Arrow *)
     | Pack
-        { body = Le (Level1 (Fun (ty11, ty12)), Level1 (Fun (ty21, ty22))); _ }
+        {
+          body = Le (Level1 (Fun (ty11, ty12)), Level1 (Fun (ty21, ty22)));
+          attr;
+        }
       :: tl ->
+        info_case "U-T1Arrow";
         aux
           {
             config with
             constraints =
-              (Syntax.Types.Level1 ty21 *<= Syntax.Types.Level1 ty11)
-              @:: (Syntax.Types.Level1 ty12 *<= Syntax.Types.Level1 ty22)
+              ((Syntax.Types.Level1 ty21 *<=@ Syntax.Types.Level1 ty11) @@ attr)
+              @:: ((Syntax.Types.Level1 ty12 *<=@ Syntax.Types.Level1 ty22)
+                  @@ attr)
               @:: tl;
           }
     (* U-AnnSeq *)
@@ -947,22 +1034,27 @@ let csolve assumptions allcstr =
         {
           body =
             Le (Annotation (Seq (ty11, ann1)), Annotation (Seq (ty21, ann2)));
-          _;
+          attr;
         }
       :: tl ->
+        info_case "AnnSeq";
         aux
           {
             config with
             constraints =
-              (Syntax.Types.Level0 ty11 *<= Syntax.Types.Level0 ty21)
-              @:: (Syntax.Types.Annotation ann1 *<= Syntax.Types.Annotation ann2)
+              ((Syntax.Types.Level0 ty11 *<=@ Syntax.Types.Level0 ty21) @@ attr)
+              @:: (Syntax.Types.Annotation ann1
+                   *<=@ Syntax.Types.Annotation ann2
+                  @@ attr)
               @:: tl;
           }
     (* U-Clas *)
-    | Pack { body = Le (Classifier cls1, Classifier cls2); _ } :: tl
+    | Pack { body = Le (Classifier cls1, Classifier cls2); attr } :: tl
       when not
            @@ ConstraintGraph.contains config.cgraph
-           @@ (Types.Var.Classifier cls1 *<= Classifier cls2) ->
+           @@ (cls1 */=@ Syntax.Types.Var.Classifier cls2)
+           @@ attr ->
+        info_case "U-Clas";
         aux
           {
             config with
@@ -973,90 +1065,105 @@ let csolve assumptions allcstr =
                 config.cgraph;
           }
     (* U-NRClas *)
-    | Pack { body = NotIn (cls1, Classifier cls2); _ } :: tl
+    | Pack { body = NotIn (cls1, Classifier cls2); attr } :: tl
       when not
            @@ ConstraintGraph.contains config.cgraph
-           @@ (cls1 */= Types.Var.Classifier cls2) ->
+           @@ (Types.Var.Classifier cls1 *<=@ Classifier cls2)
+           @@ attr ->
+        info_case "U-NRClas";
         aux
           {
             config with
             constraints = tl;
             cgraph =
               ConstraintGraph.add
-                (cls1 */= Types.Var.Classifier cls2)
+                ((cls1 */=@ Types.Var.Classifier cls2) @@ attr)
                 config.cgraph;
           }
     (* U-NRVar *)
-    | Pack { body = NotIn (cls, Level0 (Var ty)); _ } :: tl ->
-        aux
-          {
-            config with
-            constraints = tl;
-            cgraph =
-              ConstraintGraph.add (cls */= Types.Var.Level0 ty) config.cgraph;
-          }
-    | Pack { body = NotIn (_, Level1 (Var _)); _ } :: tl ->
-        aux { config with constraints = tl }
-    | Pack { body = NotIn (cls, Annotation (Var ty)); _ } :: tl ->
+    | Pack { body = NotIn (cls, Level0 (Var ty)); attr } :: tl ->
+        info_case "U-NRVar (Level0)";
         aux
           {
             config with
             constraints = tl;
             cgraph =
               ConstraintGraph.add
-                (cls */= Types.Var.Annotation ty)
+                ((cls */=@ Types.Var.Level0 ty) @@ attr)
+                config.cgraph;
+          }
+    | Pack { body = NotIn (_, Level1 (Var _)); _ } :: tl ->
+        info_case "U-NRT1";
+        aux { config with constraints = tl }
+    | Pack { body = NotIn (cls, Annotation (Var ty)); attr } :: tl ->
+        info_case "U-NRVar (Annotation)";
+        aux
+          {
+            config with
+            constraints = tl;
+            cgraph =
+              ConstraintGraph.add
+                ((cls */=@ Types.Var.Annotation ty) @@ attr)
                 config.cgraph;
           }
     (* U-NRTArrow  *)
-    | Pack { body = NotIn (cls, Level0 (Fun (ty1, ty2, ann))); _ } :: tl ->
+    | Pack { body = NotIn (cls, Level0 (Fun (ty1, ty2, ann))); attr } :: tl ->
+        info_case "U-NRTArrow";
         aux
           {
             config with
             constraints =
-              (cls */= Syntax.Types.Level0 ty1)
-              @:: (cls */= Syntax.Types.Level0 ty2)
-              @:: (cls */= Syntax.Types.Annotation ann)
+              ((cls */=@ Syntax.Types.Level0 ty1) @@ attr)
+              @:: ((cls */=@ Syntax.Types.Level0 ty2) @@ attr)
+              @:: ((cls */=@ Syntax.Types.Annotation ann) @@ attr)
               @:: tl;
           }
         (* U-NRTContArrow  *)
-    | Pack { body = NotIn (cls, Level0 (ContFun (ty1, ty2, ann))); _ } :: tl ->
+    | Pack { body = NotIn (cls, Level0 (ContFun (ty1, ty2, ann))); attr } :: tl
+      ->
+        info_case "U-NRTContArrow";
         aux
           {
             config with
             constraints =
-              (cls */= Syntax.Types.Level0 ty1)
-              @:: (cls */= Syntax.Types.Level0 ty2)
-              @:: (cls */= Syntax.Types.Annotation ann)
+              ((cls */=@ Syntax.Types.Level0 ty1) @@ attr)
+              @:: ((cls */=@ Syntax.Types.Level0 ty2) @@ attr)
+              @:: ((cls */=@ Syntax.Types.Annotation ann) @@ attr)
               @:: tl;
           }
         (* U-NRTCode  *)
-    | Pack { body = NotIn (cls, Level0 (Code (ty1, cls2))); _ } :: tl ->
+    | Pack { body = NotIn (cls, Level0 (Code (ty1, cls2))); attr } :: tl ->
+        info_case "U-NRTCode";
         aux
           {
             config with
             constraints =
-              (cls */= Syntax.Types.Level1 ty1)
-              @:: (cls */= Syntax.Types.Classifier cls2)
+              ((cls */=@ Syntax.Types.Level1 ty1) @@ attr)
+              @:: ((cls */=@ Syntax.Types.Classifier cls2) @@ attr)
               @:: tl;
           }
         (* U-NRT1Arrow  *)
     | Pack { body = NotIn (_, Level1 _); _ } :: tl ->
+        info_case "U-NRT1";
         aux { config with constraints = tl }
     (* U-AnnEmpty *)
     | Pack { body = NotIn (_, Annotation Empty); _ } :: tl ->
+        info_case "U-NRT1";
         aux { config with constraints = tl }
     (* U-AnnSeq *)
-    | Pack { body = NotIn (cls, Annotation (Seq (ty, ann1))); _ } :: tl ->
+    | Pack { body = NotIn (cls, Annotation (Seq (ty, ann1))); attr } :: tl ->
+        info_case "U-NRAnnSeq";
         aux
           {
             config with
             constraints =
-              (cls */= Syntax.Types.Level0 ty)
-              @:: (cls */= Syntax.Types.Annotation ann1)
+              ((cls */=@ Syntax.Types.Level0 ty) @@ attr)
+              @:: ((cls */=@ Syntax.Types.Annotation ann1) @@ attr)
               @:: tl;
           }
         (* U-NRConst *)
     | Pack { body = NotIn (_, Level0 (Const _)); _ } :: tl ->
+        info_case "U-NRConst";
         aux { config with constraints = tl }
     (* Failure case *)
     | Pack { body = NotIn (cls, Classifier cls2); attr } :: _ ->

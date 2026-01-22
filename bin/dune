@@ -1,4 +1,4 @@
 (executable
- (public_name msp_eff)
+ (public_name StagedS0R0)
  (name main)
- (libraries msp_eff))
+ (libraries StagedS0R0))

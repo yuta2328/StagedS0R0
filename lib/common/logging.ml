@@ -2,20 +2,19 @@ open Format
 open Myutil
 module Log = Dolog.Log
 
-let filepath = "logging"
-let () = if not (Sys.file_exists filepath) then Unix.mkdir filepath 0o755
+(* let filepath = "logging" *)
+(* let () = if not (Sys.file_exists filepath) then Unix.mkdir filepath 0o755 *)
 
-let timestamp_filename () =
-  let tm = Unix.localtime @@ Unix.time () in
-  Printf.sprintf "%04d%02d%02d%02d%02d%02d" (tm.tm_year + 1900) (tm.tm_mon + 1)
-    tm.tm_mday tm.tm_hour tm.tm_min tm.tm_sec
+(* let timestamp_filename () = *)
+(*   let tm = Unix.localtime @@ Unix.time () in *)
+(*   Printf.sprintf "%04d%02d%02d%02d%02d%02d" (tm.tm_year + 1900) (tm.tm_mon + 1) *)
+(*     tm.tm_mday tm.tm_hour tm.tm_min tm.tm_sec *)
 
-let _timestamp = timestamp_filename ()
-let log_filename = Printf.sprintf "%s/%s.log" filepath _timestamp
+(* let _timestamp = timestamp_filename () *)
+(* let log_filename = Printf.sprintf "%s/%s.log" filepath _timestamp *)
 
-let () =
-  Log.set_output @@ open_out_gen [ Open_wronly; Open_creat ] 0o644 log_filename
-
+let () = Log.set_output stdout
+let () = Log.set_log_level Log.INFO
 let info fmt = Log.info fmt
 let warn fmt = Log.warn fmt
 let error fmt = Log.error fmt
@@ -37,10 +36,10 @@ let error fmt = Log.error fmt
 (*     k (Format.formatter_of_out_channel oc); *)
 (*     close_out oc *)
 
-module Trace (In : Show.S) (Out : Show.S) = struct
-  let trace name f =
-   fun x ->
-    let y = f x in
-    info "%s: %s" name @@ asprintf "@[<hov 1>%a@ ->@ %a@]" In.pp x Out.pp y;
-    y
-end
+let trace (type f t) name (module In : Show.S with type t = f)
+    (module Out : Show.S with type t = t) f x =
+  let y = f x in
+  let () =
+    info "%s: %s" name @@ asprintf "@[<hov 1>%a@ ->@ %a@]" In.pp x Out.pp y
+  in
+  y

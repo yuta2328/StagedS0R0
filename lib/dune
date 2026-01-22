@@ -6,7 +6,7 @@
 (ocamllex lexer)
 
 (library
- (name msp_eff)
+ (name StagedS0R0)
  (preprocess
   (staged_pps ppx_deriving_yojson ppx_deriving.show))
  (modules front parser lexer syntax trans aux subst parser_wrap infer eval builtin top)

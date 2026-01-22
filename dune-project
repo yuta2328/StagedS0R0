@@ -1,6 +1,6 @@
 (lang dune 3.17)
 
-(name msp_eff)
+(name StagedS0R0)
 
 (generate_opam_files true)
 
@@ -16,7 +16,7 @@
 (license LICENSE)
 
 (package
- (name msp_eff)
+ (name StagedS0R0)
  (synopsis "A short synopsis")
  (description "A longer description")
  (depends ocaml dune menhir dolog ppx_deriving_yojson ppx_inline_test qcheck alcotest)

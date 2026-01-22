@@ -1,0 +1,1 @@
+clet x0 = cint 1 in { clet x1 = x0 in shift0 k in x1  }

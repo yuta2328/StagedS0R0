@@ -1,0 +1,1 @@
+capp (cfun x -> x) (cint 1)

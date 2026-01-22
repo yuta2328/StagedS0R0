@@ -19,21 +19,23 @@ type result = {
 let initial_state : state =
   {
     type_ctx = TypeContext.empty;
-    poly_ctx = PolyContext.empty;
+    poly_ctx = PolyContext.from_list @@ Env.poly_ctx Builtin.Env.list;
     eval_env = ValueEnv.empty;
   }
 
 let process state lexbuf =
-  Result.get_ok (Parser_wrap.parse lexbuf) |> fun exp ->
+  Result.get_ok_exn (module String) (Parser_wrap.parse lexbuf) |> fun exp ->
   let exp = Trans.Exp.trans exp in
-  Result.get_ok
+  Result.get_ok_exn
+    (module InferError)
     (infer { ty_cxt = state.type_ctx; poly_cxt = state.poly_ctx; exp })
   |> fun infer_result ->
-  Result.get_ok (eval state.eval_env exp) |> fun value ->
+  (* Result.get_ok_exn (module RuntimeError) (eval state.eval_env exp) *)
+  (* |> fun value -> *)
   {
     inferred_type = infer_result.type_;
     annotation = infer_result.annotation;
-    value;
+    value = Exp.Value.(Var (Var "dummy_value"));
   }
 
 let run_repl () =
@@ -56,6 +58,7 @@ let run_repl () =
 let run_from_file filename =
   let ic = open_in filename in
   let lexbuf = Lexing.from_channel ic in
+  let () = Lexing.set_filename lexbuf filename in
   let state = initial_state in
   match process state lexbuf with
   | exception Failure msg ->

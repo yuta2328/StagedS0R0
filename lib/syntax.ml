@@ -21,7 +21,10 @@ module Exp = struct
 
   module Level0 = struct
     module Var = struct
-      type t = Var of string [@@deriving show]
+      type t = Var of string
+
+      let pp fmt (Var x) = Format.fprintf fmt "%s" x
+      let show (Var x) = x
     end
 
     type t = (_exp, SourcePosition.t) Annotated.t
@@ -137,31 +140,4 @@ end
 
 module Assumption = struct
   type t = (Types.Classifier.t * Types.Classifier.t) list
-end
-
-module AllVarList = struct
-  type pack = Pack : 'a Types.Var.t -> pack
-  type t = pack list
-end
-
-module AllConstraintList = struct
-  type pack = Pack : 'a Types.t Constraint.t -> pack
-  type t = pack list
-end
-
-module TypeScheme = struct
-  type t = {
-    bound_vars : AllVarList.t;
-    assumptions : Assumption.t;
-    all_constraints : AllConstraintList.t;
-    ty : Types.Level0.t;
-  }
-end
-
-module Env = struct
-  module Value = struct
-    type t = { ty : TypeScheme.t; value : Exp.Value.t }
-  end
-
-  type t = (Exp.Level0.Var.t * Value.t) list
 end

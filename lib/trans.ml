@@ -29,30 +29,42 @@ module Exp = struct
   type t = Syntax.Exp.Level0.t
 
   let rec trans : f -> t =
-   fun e ->
+    fun e ->
+    let open Annotated in
     match e.body with
     | Var x -> { body = Var (Var.trans x); attr = e.attr }
     | Const c -> { body = Const (Const.trans c); attr = e.attr }
     | Lam (x, e) -> { body = Lam (Var.trans x, trans e); attr = e.attr }
     | OpApp (op, e1, e2) ->
-        {
-          body =
-            App
-              ( {
-                  body =
-                    App
-                      ( { body = Var (OP.trans op); attr = SourcePosition.dummy },
-                        trans e1 );
-                  attr = e.attr;
-                },
-                trans e2 );
-          attr = e.attr;
-        }
+      {
+        body =
+          App
+            ( {
+              body =
+                App
+                  ( { body = Var (OP.trans op); attr = SourcePosition.dummy },
+                    trans e1 );
+              attr = e.attr;
+            },
+              trans e2 );
+        attr = e.attr;
+      }
     | App (e1, e2) -> { body = App (trans e1, trans e2); attr = e.attr }
     | If (e1, e2, e3) ->
-        { body = If (trans e1, trans e2, trans e3); attr = e.attr }
+      { body = If (trans e1, trans e2, trans e3); attr = e.attr }
     | Let (x, e1, e2) ->
-        { body = Let (Var.trans x, trans e1, trans e2); attr = e.attr }
+      { body = Let (Var.trans x, trans e1, trans e2); attr = e.attr }
+    | CLet (x, e1, e2) ->
+      { body =
+          App ({
+            body =
+              Syntax.Exp.Level0.App
+                ({ body = Var (Var "capp"); attr = SourcePosition.dummy }, {
+                      body = Syntax.Exp.Level0.CLam (Var.trans x, trans e2);
+                      attr = e2.attr;
+                    });
+            attr = e2.attr;
+          }, trans e1); attr = e1.attr }
     | CLam (x, e) -> { body = CLam (Var.trans x, trans e); attr = e.attr }
     | Reset0 e -> { body = Reset0 (trans e); attr = e.attr }
     | Shift0 (x, e) -> { body = Shift0 (Var.trans x, trans e); attr = e.attr }

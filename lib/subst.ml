@@ -18,7 +18,7 @@ module Substitution = struct
       pp_list_comma @@ fun fmt (Pack (tv, ty)) ->
       fprintf fmt "%a/%a" Aux.Types.pp ty Aux.Types.Var.pp tv
 
-    let show x = asprintf x
+    let show x = asprintf "%a" pp x
     let id : t = []
 
     let subst_of : type a. a Syntax.Types.Var.t -> a Syntax.Types.t -> t =
@@ -27,14 +27,40 @@ module Substitution = struct
     (* Composition *)
     let ( **. ) : t -> t -> t =
       List.fold_right @@ fun (Pack (x, y)) sbt ->
-      flip List.map sbt @@ fun (Pack (x1, y1)) ->
-      Pack (x1, Types.subst_map x y y1)
+      Pack (x, y)
+      :: ( flip List.map sbt @@ fun (Pack (x1, y1)) ->
+           Pack (x1, Types.subst_map x y y1) )
 
     let compose_all : t list -> t = fun x -> List.fold_right ( **. ) x id
 
     let elim : AllVarList.t -> t -> t =
      fun fvt sbt ->
       List.filter (fun (Pack (tv, _)) -> not (AllVarList.mem tv fvt)) sbt
+
+    let refresh_and_gen_subst : type a. AllVarList.t -> a Syntax.Types.t -> t =
+     fun vars ty ->
+      (* let () = info "debug %s" (Types.show ty) in *)
+      let result =
+        compose_all @@ List.concat_option
+        @@ flip List.map (AllVarList.S.to_list vars)
+        @@ fun (AllVarList.Pack tv) ->
+        (* let () = info "debug (var) %s" (Types.Var.show tv) in *)
+        match (tv, ty) with
+        | Level0 tv, Level0 ty ->
+            Some (subst_of (Level0 tv) @@ Types.fresh_of @@ Level0 ty)
+        | Level1 tv, Level1 ty ->
+            Some (subst_of (Level1 tv) @@ Types.fresh_of @@ Level1 ty)
+        | Annotation tv, Annotation ty ->
+            Some (subst_of (Annotation tv) @@ Types.fresh_of @@ Annotation ty)
+        | Classifier tv, Classifier ty ->
+            Some (subst_of (Classifier tv) @@ Types.fresh_of @@ Classifier ty)
+        | _ -> None
+      in
+      let () =
+        info "[Substitution.Subst.refresh_and_gen_subst] %s, %s ===> %s"
+          (AllVarList.show vars) (Types.show ty) (show result)
+      in
+      result
   end
 
   module type S = sig
@@ -62,6 +88,7 @@ module Types = struct
   module type Level1 = sig
     include Aux.Types.Level1
     include FV with type t := t
+    include Substitution.S with type t := t
   end
 
   module type Classifier = sig
@@ -95,7 +122,13 @@ module Types = struct
     let rec fv : t -> AllVarList.t = function
       | Var x -> AllVarList.singleton (Level1 x)
       | Const _ -> AllVarList.empty
-      | Fun (ty1, ty2) -> fv ty1 @ fv ty2
+      | Fun (ty1, ty2) -> AllVarList.(fv ty1 @ fv ty2)
+
+    let subst sbt ty =
+      List.fold_right
+        (fun (Substitution.Subst.Pack (tv, ty_sub)) ty ->
+          Aux.Types.Level1.subst_map tv ty_sub ty)
+        sbt ty
   end
 
   module rec Level0 : Level0 = struct
@@ -104,9 +137,10 @@ module Types = struct
     let rec fv : t -> AllVarList.t = function
       | Var x -> AllVarList.singleton (Level0 x)
       | Const _ -> AllVarList.empty
-      | Fun (ty1, ty2, ann) -> fv ty1 @ fv ty2 @ Annotation.fv ann
-      | ContFun (ty1, ty2, ann) -> fv ty1 @ fv ty2 @ Annotation.fv ann
-      | Code (lv1, cls) -> Level1.fv lv1 @ Classifier.fv cls
+      | Fun (ty1, ty2, ann) -> AllVarList.(fv ty1 @ fv ty2 @ Annotation.fv ann)
+      | ContFun (ty1, ty2, ann) ->
+          AllVarList.(fv ty1 @ fv ty2 @ Annotation.fv ann)
+      | Code (lv1, cls) -> AllVarList.(Level1.fv lv1 @ Classifier.fv cls)
 
     let subst sbt ty =
       List.fold_right
@@ -121,7 +155,7 @@ module Types = struct
     let rec fv : t -> AllVarList.t = function
       | Empty -> AllVarList.empty
       | Var x -> AllVarList.singleton (Annotation x)
-      | Seq (ty0, ann) -> Level0.fv ty0 @ fv ann
+      | Seq (ty0, ann) -> AllVarList.(Level0.fv ty0 @ fv ann)
 
     let subst sbt ty =
       List.fold_right
@@ -151,8 +185,8 @@ module Constraint = struct
 
   let fv_of : ('a -> AllVarList.t) -> 'a t -> AllVarList.t =
    fun f -> function
-    | { body = Le (x, y); _ } -> f x @ f y
-    | { body = NotIn (cls, x); _ } -> Types.Classifier.fv cls @ f x
+    | { body = Le (x, y); _ } -> AllVarList.(f x @ f y)
+    | { body = NotIn (cls, x); _ } -> AllVarList.(Types.Classifier.fv cls @ f x)
 
   let subst_of : (Subst.t -> 'a -> 'a) -> Subst.t -> 'a t -> 'a t =
    fun f sbt -> function
@@ -182,12 +216,12 @@ module AllVarList = struct
 
   let refresh : t -> t * Subst.t =
    fun t ->
-    List.fold_right
+    S.fold
       (fun (Pack v) (acc_vars, acc_sbt) ->
         let v' = Aux.Types.Var.fresh_of v in
         let sbt = Subst.subst_of v @@ Aux.Types.varof v' in
         (v' @:: acc_vars, Subst.(sbt **. acc_sbt)))
-      t ([], Subst.id)
+      t (empty, Subst.id)
 end
 
 module AllConstraintList = struct

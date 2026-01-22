@@ -16,6 +16,7 @@ module PolyContext : sig
   type t
 
   val empty : t
+  val from_list : (Exp.Level0.Var.t * TypeScheme.t) list -> t
   val add : t -> Exp.Level0.Var.t -> TypeScheme.t -> t
   val lookup : Exp.Level0.Var.t -> t -> TypeScheme.t option
 
